@@ -9,16 +9,16 @@ from linear import amp_to_frequency, linear_noise
 import pandas as pd
 
 # Points in transform
-SAMPLE_POINTS = 100000
-SAMPLE_DEPTHS = 100
+SAMPLE_POINTS = 1000
+SAMPLE_DEPTHS = 760  # For 1.3mm sample, this is
 
 # Temperature
 TEMPERATURE = 300.0  # K
 
 # Engineering Parameter
 SAMPLE_RATE = 400000.0  # Hz
-DETECTOR_HEIGHT = 20e-06  # m
-DETECTOR_WIDTH = 100e-06  # m
+DETECTOR_HEIGHT = 10e-06  # m
+DETECTOR_WIDTH = 200e-06  # m
 DETECTOR_NUMBER = 1024  # pixels
 DETECTOR_VOLTAGE = 3.3  # V
 DETECTOR_RESISTANCE = 0.2  # Ohms TODO: is this calculated?
@@ -33,10 +33,10 @@ RIN_NOISE_PCT = 1.0
 # Sample Specs
 SAMPLE_REFLECTIVITY_PCT = 1.0
 SAMPLE_REFRACTIVE_INDEX = 1.5  # n
-DEFAULT_SAMPLE_DEPTH = 200e-06  # m
+DEFAULT_SAMPLE_DEPTH = 1.3e-03  # m
 
 # Linear Specs
-CAPACITOR = 10e0 - 12  # F
+CAPACITOR = 1e-12  # F
 RESET_TIME = 10e-09  # s
 RESET_JITTER = 1e-09  # s
 BUFFER_GAIN = 1.0  # V/V
@@ -103,6 +103,7 @@ class Detector:
         """
         self.responsivity = pd.read_csv(self._responsivity_path, index_col=False)
         self.source_power = pd.read_csv(self._source_path, index_col=False)
+        # TODO Add resample of source power for more points (interpolate)
         self.sample_depth = sample_depth
         self.em_data = dict()
         self.detector_data = dict()
@@ -172,15 +173,17 @@ class Detector:
             self.linear_cap,
             self.threshold_voltage,
             self.reset_time,
-        )
+        )  # Includes DC, which is bias.
         self.detector_data["DC_Noise"] = self.detector_data["DC_Noise"] + linear_noise(
-            self.detector_data["DC"],
+            self.detector_data["DC"] + self.detector_data["Signal"],
             self.linear_cap,
             self.detector_resistance,
             self.temperature,
         )
         self.frequency_data["Noise"] = amp_to_frequency(
-            self.detector_data["sample_noise"] + self.detector_data["ref_noise"],
+            self.detector_data["DC_Noise"]
+            + self.detector_data["sample_noise"]
+            + self.detector_data["ref_noise"],
             self.linear_cap,
             self.threshold_voltage,
             self.reset_time,
