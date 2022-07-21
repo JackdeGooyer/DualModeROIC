@@ -29,15 +29,20 @@ def beam_split(
     Dict[pd.DataFrame]
         Reference DataFrame, Source DataFrame
     """
+    # Copy Inputs
+    ref_df = input_df.copy(deep=True)
+    sample_df = input_df.copy(deep=True)
 
-    ref_df = input_df.copy(deep=True).loc[:, input_df.columns != "Wavelength_nm"] * (
-        split_pct_ref / 100
-    )
-    sample_df = input_df.copy(deep=True).loc[:, input_df.columns != "Wavelength_nm"] * (
-        (1 - (split_pct_ref / 100))
-    )
+    # Perform Split
+    ref_df.loc[:, input_df.columns != "Wavelength_nm"] = ref_df.loc[
+        :, input_df.columns != "Wavelength_nm"
+    ] * (split_pct_ref / 100)
+    sample_df.loc[:, input_df.columns != "Wavelength_nm"] = sample_df.loc[
+        :, input_df.columns != "Wavelength_nm"
+    ] * ((1 - (split_pct_ref / 100)))
+
+    # Recombine outputs
     out_dict = {"ref": ref_df, "sample": sample_df}
-
     return out_dict
 
 
@@ -56,9 +61,11 @@ def light_loss(input_df: pd.DataFrame = None, loss_pct: float = 10) -> pd.DataFr
     pd.DataFrame
         Dataframe with loss
     """
-    return input_df.copy(deep=True).loc[:, input_df.columns != "Wavelength_nm"] * (
-        loss_pct / 100
+    df = input_df.copy()
+    df.loc[:, input_df.columns != "Wavelength_nm"] = (
+        (df.loc[:, input_df.columns != "Wavelength_nm"] * (loss_pct / 100)),
     )
+    return df
 
 
 def reflection_loss(
@@ -124,15 +131,63 @@ def get_time_delay(
 
             # Determine proper column name
             col_name = (
-                (column + "Depth_" + str(1000 * depth) + "mm")
+                (column + "Depth_" + str(1000 * round(depth, 4)) + "mm")
                 if preserve_name
-                else ("Depth_" + str(1000 * depth) + "mm")
+                else ("Depth_" + str(1000 * round(depth, 4)) + "mm")
             )
 
-            # Calculate frequency shift and append new column TODO Performance
+            # Calculate frequency shift and append new column
+            # TODO Performance
+            # TODO This may be an aprox that only works on VERY small time scales or narrow bw
             seen_depth = depth * ref_index
             df[col_name] = df[column].to_numpy() * np.exp(
                 -1j * 2 * spc.pi * freq * seen_depth * spc.speed_of_light
             )
+
+    return df
+
+
+def get_em_noise(
+    input_df: pd.DataFrame, rin_noise_pct: float = 100, shot_noise: bool = True
+) -> pd.DataFrame:
+    """Adds power for poission noise, rin noise, and other source noises
+
+    Parameters
+    ----------
+    input_df : pd.DataFrame
+        Dataframe of current laser powers at various depths
+    rin_noise_pct : float, optional
+        Relative intensity noise, by percent, by default 100
+    shot_noise : bool, optional
+        Flag to determine weather to calculate shot noise, by default True
+
+    Returns
+    -------
+    pd.DataFrame
+        Dataframe showing power of noise per depth
+    """
+
+    df = input_df.copy(deep=True)
+    for column in df.columns:
+
+        # Get photon energy
+        if column == "Wavelength_nm":
+            energy = (
+                spc.Planck
+                * spc.speed_of_light
+                / (df["Wavelength_nm"].to_numpy() * 1e-09)
+            )
+            continue
+
+        # Get Photon Shot Noise (sqrt(Photon Number)) TODO Check formula
+        if shot_noise:
+            photon_shot_noise = energy * np.sqrt(df[column] / energy)
+        else:
+            photon_shot_noise = 0
+
+        # Get RiN Noise
+        rin_noise = df[column] * rin_noise_pct / 100
+
+        df[column] = rin_noise + photon_shot_noise
 
     return df
