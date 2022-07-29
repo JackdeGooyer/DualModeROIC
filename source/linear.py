@@ -47,9 +47,9 @@ def amp_to_frequency(
         time_to_charge = df[column] / (capacitor * threshold_voltage)
         df[column] = 1 / (time_to_charge + reset_time)
 
-        # Add reset jitter # TODO Check this
+        # Add reset jitter # TODO Change this
         if reset_jitter is not None:
-            df[column] = df[column] + 1 / reset_jitter
+            df[column] = df[column] + (1 / reset_jitter)
 
     return df
 
@@ -99,9 +99,11 @@ def linear_noise(
         df[column] = thermal_current_noise
 
         # Add Shot Noise
-        bandwidth = 1 / (capacitance * detector_resistance)  # TODO fix this
+        bandwidth = 1 / (
+            capacitance * detector_resistance
+        )  # TODO fix this, spectral. Or maybe, make it do the integral.
         diode_shot_noise = math.sqrt(
-            spc.elementary_charge * 2 * dc_current_df["column"]
+            spc.elementary_charge * 2 * dc_current_df[column]
         ) * (bandwidth)
 
         # Save Result

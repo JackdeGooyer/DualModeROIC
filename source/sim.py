@@ -2,109 +2,74 @@
 """
 
 from pathlib import Path
-from typing import Dict
-from oct import beam_split, reflection_loss, get_time_delay, get_em_noise
+from oct import beam_split, reflection_loss, get_time_delay, add_em_noise
 from detector import convert_em_to_channels
 from linear import amp_to_frequency, linear_noise
+import constants as c
 import pandas as pd
 
-# Points in transform
-SAMPLE_POINTS = 1000
-SAMPLE_DEPTHS = 760  # For 1.3mm sample, this is
-
-# Temperature
-TEMPERATURE = 300.0  # K
-
-# Engineering Parameter
-SAMPLE_RATE = 400000.0  # Hz
-DETECTOR_HEIGHT = 10e-06  # m
-DETECTOR_WIDTH = 200e-06  # m
-DETECTOR_NUMBER = 1024  # pixels
-DETECTOR_VOLTAGE = 3.3  # V
-DETECTOR_RESISTANCE = 0.2  # Ohms TODO: is this calculated?
-DETECTOR_AREA = DETECTOR_HEIGHT * DETECTOR_WIDTH  # m^2
-
-# OCT Beam Params
-REFERENCE_REFLECTIVITY_PCT = 100.0
-BEAM_SPLIT_REF_PCT = 50.0  # Sample/Reference
-BEAM_LOSSES_PCT = 10.0
-RIN_NOISE_PCT = 1.0
-
-# Sample Specs
-SAMPLE_REFLECTIVITY_PCT = 1.0
-SAMPLE_REFRACTIVE_INDEX = 1.5  # n
-DEFAULT_SAMPLE_DEPTH = 1.3e-03  # m
-
-# Linear Specs
-CAPACITOR = 1e-12  # F
-RESET_TIME = 10e-09  # s
-RESET_JITTER = 1e-09  # s
-BUFFER_GAIN = 1.0  # V/V
-VOLTAGE_THRESHOLD = 3.3  # V
-
-# File Paths
-BASEDIR = Path(__file__).resolve().parent.parent
-DEFAULT_RESPONSIVITY_FILEPATH = BASEDIR.joinpath(r"Data\DetectorResponsivity.csv")
-DEFAULT_SOURCE_FILEPATH = BASEDIR.joinpath(r"Data\SourcePower.csv")
+"""TODO:
+        1. Add independent noise channels - no more sums (dict?)
+        2. Create numerical generator for source
+        3. Create numerical generator for detector (?)
+        4. Perform full interpolations for bias levels, etc
+        5. Fix signal equation
+        6. Add testing
+        7. Remove depths -- useless dimension :)
+"""
 
 
-class Detector:
-    """Class for Detector Data Handling"""
+class OCTSim:
+    """Class for Simulation Data Handling"""
 
-    # Data
-    em_data: Dict[str, pd.DataFrame] = None
-    detector_data: Dict[str, pd.DataFrame] = None
-    frequency_data: Dict[str, pd.DataFrame] = None
+    # Data dict -- Keys: Physical Location (Sample, Ref, etc), Subtype (Signal, Noise)
+    em_data: c.RecursiveDict = None
+    em_data_template: c.RecursiveDict = {"input": {"signal": True, "noise": {}}}
+    detector_data: c.RecursiveDict = None
+    frequency_data: c.RecursiveDict = None
 
     # Files
-    _responsivity_path: Path = DEFAULT_RESPONSIVITY_FILEPATH
-    _source_path: Path = DEFAULT_SOURCE_FILEPATH
+    _responsivity_path: Path = c.DEFAULT_RESPONSIVITY_FILEPATH
+    _source_path: Path = c.DEFAULT_SOURCE_FILEPATH
 
     responsivity: pd.DataFrame = None
     source_power: pd.DataFrame = None
 
     # Sim Depth
-    sample_points: int = SAMPLE_POINTS
-    sample_depths: int = SAMPLE_DEPTHS
+    sample_points: int = c.SAMPLE_POINTS
+    sample_depths: int = c.SAMPLE_DEPTHS
+    sample_depth: float = c.DEFAULT_SAMPLE_DEPTH
 
     # Engineering Parameter
-    sample_rate: float = SAMPLE_RATE
-    number_of_detectors: int = DETECTOR_NUMBER
-    detector_area: int = DETECTOR_AREA
-    detector_bias_voltage: float = DETECTOR_VOLTAGE
-    detector_resistance: float = DETECTOR_RESISTANCE
-    temperature: float = TEMPERATURE
+    sample_rate: float = c.SAMPLE_RATE
+    number_of_detectors: int = c.DETECTOR_NUMBER
+    detector_area: int = c.DETECTOR_AREA
+    detector_bias_voltage: float = c.DETECTOR_VOLTAGE
+    detector_resistance: float = c.DETECTOR_RESISTANCE
+    temperature: float = c.TEMPERATURE
 
     # OCT Beam Params
-    ref_reflect_pct: float = REFERENCE_REFLECTIVITY_PCT
-    bs_ref_pct: float = BEAM_SPLIT_REF_PCT
-    beam_losses_pct: float = BEAM_LOSSES_PCT
-    rin_noise_pct: float = RIN_NOISE_PCT
+    ref_reflect_pct: float = c.REFERENCE_REFLECTIVITY_PCT
+    bs_ref_pct: float = c.BEAM_SPLIT_REF_PCT
+    beam_losses_pct: float = c.BEAM_LOSSES_PCT
+    rin_noise_pct: float = c.RIN_NOISE_PCT
 
     # Linear Values
-    linear_cap: float = CAPACITOR
-    reset_time: float = RESET_TIME
-    reset_jitter: float = RESET_JITTER
-    buffer_gain: float = BUFFER_GAIN
-    threshold_voltage: float = VOLTAGE_THRESHOLD
+    linear_cap: float = c.CAPACITOR
+    reset_time: float = c.RESET_TIME
+    reset_jitter: float = c.RESET_JITTER
+    buffer_gain: float = c.BUFFER_GAIN
+    threshold_voltage: float = c.VOLTAGE_THRESHOLD
 
     # Sample Specs
-    sample_reflect_pct: float = SAMPLE_REFLECTIVITY_PCT
-    sample_ref_index: float = SAMPLE_REFRACTIVE_INDEX
-    tissue_depth: float = DEFAULT_SAMPLE_DEPTH
+    sample_reflect_pct: float = c.SAMPLE_REFLECTIVITY_PCT
+    sample_ref_index: float = c.SAMPLE_REFRACTIVE_INDEX
+    tissue_depth: float = c.DEFAULT_SAMPLE_DEPTH
 
-    def __init__(self, sample_depth: float = DEFAULT_SAMPLE_DEPTH):
-        """Reads all data files into Detector Class
-
-        Parameters
-        ----------
-        sample_depth : float, optional
-            Tissue Depth of Sample, by default DEFAULT_SAMPLE_DEPTH
-        """
+    def __init__(self):
+        """Reads all data files into Detector Class"""
         self.responsivity = pd.read_csv(self._responsivity_path, index_col=False)
         self.source_power = pd.read_csv(self._source_path, index_col=False)
-        # TODO Add resample of source power for more points (interpolate)
-        self.sample_depth = sample_depth
         self.em_data = dict()
         self.detector_data = dict()
         self.frequency_data = dict()
@@ -112,7 +77,10 @@ class Detector:
 
     def perform_oct_sim(self):
         """Perform all required simulation for the OCT portion of the device"""
-        self.em_data = beam_split(self.source_power, split_pct_ref=self.bs_ref_pct)
+        self.generate_em_data(self.source_power, self.em_data_template)
+        self.em_data["ref"], self.em_data["sample"] = beam_split(
+            self.em_data["input"], split_pct_ref=self.bs_ref_pct
+        )
         self.em_data["ref"] = reflection_loss(self.em_data["ref"], self.ref_reflect_pct)
         self.em_data["sample"] = reflection_loss(
             self.em_data["sample"], self.sample_reflect_pct
@@ -129,11 +97,11 @@ class Detector:
             max_depth=self.sample_depth,
             ref_index=0,
         )
-        self.em_data["ref_noise"] = get_em_noise(
-            self.em_data["ref"], rin_noise_pct=self.rin_noise_pct, shot_noise=True
-        )
-        self.em_data["sample_noise"] = get_em_noise(
+        self.em_data["sample"] = add_em_noise(
             self.em_data["sample"], rin_noise_pct=self.rin_noise_pct, shot_noise=True
+        )
+        self.em_data["ref"] = add_em_noise(
+            self.em_data["ref"], rin_noise_pct=self.rin_noise_pct, shot_noise=True
         )
         return
 
@@ -144,12 +112,14 @@ class Detector:
             self.responsivity,
             self.detector_bias_voltage,
             self.number_of_detectors,
+            self.detector_area,
         )
         self.detector_data["DC"] = convert_em_to_channels(
             self.em_data["ref"],
             self.responsivity,
             self.detector_bias_voltage,
             self.number_of_detectors,
+            self.detector_area,
             dark_current=True,
         )
         self.detector_data["Signal_Noise"] = convert_em_to_channels(
@@ -157,12 +127,14 @@ class Detector:
             self.responsivity,
             self.detector_bias_voltage,
             self.number_of_detectors,
+            self.detector_area,
         )
         self.detector_data["DC_Noise"] = convert_em_to_channels(
             self.em_data["ref_noise"],
             self.responsivity,
             self.detector_bias_voltage,
             self.number_of_detectors,
+            self.detector_area,
         )
         return
 
@@ -191,6 +163,33 @@ class Detector:
         )
         return
 
+    def generate_em_data(
+        self, input_df: pd.DataFrame, dictionary: c.RecursiveDict
+    ) -> c.RecursiveDict:
+        """Generates a Dataframe for EM data based on an input dictionary
+
+        Parameters
+        ----------
+        input_df : pd.DataFrame
+            Dataframe to populate data with
+        dictionary : RecursiveDict
+            Dictionary to mimic, if an entry is "True", it will fill this with
+            the input_df
+
+        Returns
+        -------
+        RecursiveDict
+            Filled dictionary
+        """
+        for physical_loc in dictionary.keys():
+            self.em_data[physical_loc] = dict()
+            for sig_type in dictionary[physical_loc].keys():
+                if dictionary[physical_loc][sig_type] is True:
+                    self.em_data[physical_loc][sig_type] = input_df.copy(deep=True)
+                else:
+                    self.em_data[physical_loc][sig_type] = dict()
+        return
+
     def run(self):
         """Performs simulation of device"""
 
@@ -217,5 +216,5 @@ class Detector:
 
 
 if __name__ == "__main__":
-    DetectorSim = Detector()
+    DetectorSim = OCTSim()
     DetectorSim.run()
