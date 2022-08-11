@@ -7,6 +7,8 @@ from detector import convert_em_to_channels
 from linear import amp_to_frequency, linear_noise
 import constants as c
 import pandas as pd
+from source import generate_source
+
 
 """TODO:
         1. Add independent noise channels - no more sums (dict?)
@@ -33,7 +35,13 @@ class OCTSim:
     _source_path: Path = c.DEFAULT_SOURCE_FILEPATH
 
     responsivity: pd.DataFrame = None
-    source_power: pd.DataFrame = None
+    source_power_df: pd.DataFrame = None
+
+    # Source Characteristics
+    fwhm_bw: float = c.FULL_WIDTH_HALF_MAX_BW
+    central_wl: float = c.CENTRAL_WAVELENGTH
+    source_point: int = c.SOUCE_POINTS
+    total_source_power: float = c.SOURCE_POWER
 
     # Sim Depth
     sample_points: int = c.SAMPLE_POINTS
@@ -69,7 +77,7 @@ class OCTSim:
     def __init__(self):
         """Reads all data files into Detector Class"""
         self.responsivity = pd.read_csv(self._responsivity_path, index_col=False)
-        self.source_power = pd.read_csv(self._source_path, index_col=False)
+        self.source_power_df = pd.read_csv(self._source_path, index_col=False)
         self.em_data = dict()
         self.detector_data = dict()
         self.frequency_data = dict()
@@ -77,14 +85,19 @@ class OCTSim:
 
     def perform_oct_sim(self):
         """Perform all required simulation for the OCT portion of the device"""
-        self.generate_em_data(self.source_power, self.em_data_template)
+
+        self.generate_em_data(self.em_data_template)
         self.em_data["ref"], self.em_data["sample"] = beam_split(
             self.em_data["input"], split_pct_ref=self.bs_ref_pct
         )
+
+        # Losses from reflections
         self.em_data["ref"] = reflection_loss(self.em_data["ref"], self.ref_reflect_pct)
         self.em_data["sample"] = reflection_loss(
             self.em_data["sample"], self.sample_reflect_pct
         )
+
+        # Add time delay
         self.em_data["sample"] = get_time_delay(
             self.em_data["sample"],
             depth_points=self.sample_depths,
@@ -97,6 +110,18 @@ class OCTSim:
             max_depth=self.sample_depth,
             ref_index=0,
         )
+
+        # Losses from returning through beamsplitter  -- TODO: Add to after recombined data!!
+        # self.em_data["ref"] = reflection_loss(self.em_data["ref"], self.bs_ref_pct)
+        # self.em_data["sample"] = reflection_loss(
+        #     self.em_data["sample"], 100 - self.bs_ref_pct
+        # )
+
+        # TODO: Convert to field amplitudes (add before or after noise)
+        # self.combined_em_data = combine_em_data(self.em_data)
+
+        # Add the noise
+        # TODO: Check these equations as they are likely NEP
         self.em_data["sample"] = add_em_noise(
             self.em_data["sample"], rin_noise_pct=self.rin_noise_pct, shot_noise=True
         )
@@ -107,6 +132,10 @@ class OCTSim:
 
     def perform_detector_sampling(self):
         """Perform all required simulation for Spectrometor Beam to Detector Channels"""
+
+        # Combine all together
+
+        # Convert Each Individually
         self.detector_data["Signal"] = convert_em_to_channels(
             self.em_data["sample"],
             self.responsivity,
@@ -120,7 +149,6 @@ class OCTSim:
             self.detector_bias_voltage,
             self.number_of_detectors,
             self.detector_area,
-            dark_current=True,
         )
         self.detector_data["Signal_Noise"] = convert_em_to_channels(
             self.em_data["sample_noise"],
@@ -129,7 +157,7 @@ class OCTSim:
             self.number_of_detectors,
             self.detector_area,
         )
-        self.detector_data["DC_Noise"] = convert_em_to_channels(
+        self.detector_data["DC_Noise"] = convert_em_to _channels(
             self.em_data["ref_noise"],
             self.responsivity,
             self.detector_bias_voltage,
@@ -164,17 +192,17 @@ class OCTSim:
         return
 
     def generate_em_data(
-        self, input_df: pd.DataFrame, dictionary: c.RecursiveDict
+        self, dictionary: c.RecursiveDict, input_df: pd.DataFrame = None
     ) -> c.RecursiveDict:
         """Generates a Dataframe for EM data based on an input dictionary
 
         Parameters
         ----------
-        input_df : pd.DataFrame
-            Dataframe to populate data with
         dictionary : RecursiveDict
             Dictionary to mimic, if an entry is "True", it will fill this with
             the input_df
+        input_df : pd.DataFrame, by defaylt None
+            For use with external data set of input data
 
         Returns
         -------
@@ -185,7 +213,15 @@ class OCTSim:
             self.em_data[physical_loc] = dict()
             for sig_type in dictionary[physical_loc].keys():
                 if dictionary[physical_loc][sig_type] is True:
-                    self.em_data[physical_loc][sig_type] = input_df.copy(deep=True)
+                    if input_df is None:
+                        self.em_data[physical_loc][sig_type] = generate_source(
+                            self.fwhm_bw,
+                            self.central_wl,
+                            self.source_point,
+                            self.total_source_power,
+                        )
+                    else:
+                        self.em_data[physical_loc][sig_type] = input_df.copy(deep=True)
                 else:
                     self.em_data[physical_loc][sig_type] = dict()
         return

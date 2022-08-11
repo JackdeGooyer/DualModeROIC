@@ -300,7 +300,7 @@ def _get_time_delay(
 
             # Calculate frequency shift and append new column
             # TODO Definitionally this only works for small distances rel to lamda
-            seen_depth = depth * ref_index
+            seen_depth = depth * ref_index * 2  # For both in and out of sample
             input_df_or_dict[col_name] = input_df_or_dict[column].to_numpy() * np.exp(
                 -1j * 2 * spc.pi * freq * seen_depth * spc.speed_of_light
             )

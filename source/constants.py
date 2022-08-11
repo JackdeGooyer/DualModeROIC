@@ -6,6 +6,12 @@ import pandas as pd
 
 RecursiveDict = Dict[str, Union["RecursiveDict", pd.DataFrame]]
 
+# Souce Parameters
+FULL_WIDTH_HALF_MAX_BW = 129  # nm
+CENTRAL_WAVELENGTH = 785  # nm
+SOUCE_POINTS = 1000
+SOURCE_POWER = 5.2e-03  # W
+
 # Points in transform
 SAMPLE_POINTS = 1000
 SAMPLE_DEPTHS = 760  # For 1.3mm sample, this is
