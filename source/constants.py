@@ -13,8 +13,7 @@ SOUCE_POINTS = 1000
 SOURCE_POWER = 5.2e-03  # W
 
 # Points in transform
-SAMPLE_POINTS = 1000
-SAMPLE_DEPTHS = 760  # For 1.3mm sample, this is
+SAMPLE_DEPTHS = 10  # For 1.3mm sample, set to 760
 
 # Temperature
 TEMPERATURE = 300.0  # K
@@ -37,7 +36,7 @@ RIN_NOISE_PCT = 1.0
 # Sample Specs
 SAMPLE_REFLECTIVITY_PCT = 1.0
 SAMPLE_REFRACTIVE_INDEX = 1.5  # n
-DEFAULT_SAMPLE_DEPTH = 1.3e-03  # m
+DEFAULT_SAMPLE_DEPTH = 1.3e-05  # m
 
 # Linear Specs
 CAPACITOR = 1e-12  # F

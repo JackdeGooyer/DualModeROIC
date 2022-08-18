@@ -205,6 +205,98 @@ def generate_shot_noise(signal: pd.DataFrame, shot_noise: bool) -> pd.DataFrame:
     return shot_df
 
 
+def select_depths(em_data: c.RecursiveDict, depths: list) -> c.RecursiveDict:
+    """Get subset of depths from array
+
+    Parameters
+    ----------
+    em_data : c.RecursiveDict
+        Dictionary to get depths from
+    depths : list
+        Depths to choose from em_data array
+
+    Returns
+    -------
+    c.RecursiveDict
+        em_data with selected depths remaining
+    """
+    em_data_copy = copy.deepcopy(em_data)
+    if depths is None:
+        return em_data_copy
+    _select_depths(em_data_copy, depths)
+    return em_data_copy
+
+
+def combine_em_data(
+    source_power: pd.DataFrame,
+    ref_reflectivity: pd.DataFrame,
+    sample_reflectivity: pd.DataFrame,
+    small_signal: bool = False,
+) -> pd.DataFrame:
+    """Combines em_data and reflectivity to get power per detector
+
+    Parameters
+    ----------
+    source_power : pd.DataFrame
+        Power of the source
+    ref_reflectivity : pd.DataFrame
+        Power reflectivity of the reference
+    sample_reflectivity : pd.DataFrame
+        Power reflectivity of the sample
+    small_signal : bool, optional
+        Parameter to adjust for small signal (multply by 2), by default False
+
+    Returns
+    -------
+    pd.DataFrame
+        Output dataframe containing DC, Cross, and Autocorrelation Terms
+    """
+
+    output = source_power.loc[:, ["Wavelength_nm"]]
+
+    ref_depth = _get_depth(ref_reflectivity).sum(axis=1)
+    ref_exp = ref_depth / ref_depth.abs()
+    ref_mag = ref_depth.abs()
+    sample_depths = _get_depth(sample_reflectivity)
+
+    # Get DC Terms
+    output["DC_Terms_W"] = source_power["Power_W"] * (
+        ref_mag + sample_depths.abs().sum(axis=1)
+    )
+
+    # Get Cross Terms
+    output["Cross_Terms_W"] = 0
+    for column in sample_depths.columns:
+        sample_mag = sample_depths[column].abs()
+        sample_exp = sample_depths[column] / sample_mag
+        output["Cross_Terms_W"] = output["Cross_Terms_W"] + np.sqrt(
+            sample_mag * ref_mag
+        ) * (((ref_exp / sample_exp) + (sample_exp / ref_exp)).abs())
+    output["Cross_Terms_W"] = output["Cross_Terms_W"] * source_power["Power_W"]
+
+    # Get Auto Terms (TODO: divide by 2 ?)
+    output["Auto_Terms_W"] = 0
+    for n_column in sample_depths.columns:
+        n_mag = sample_depths[n_column].abs()
+        n_exp = sample_depths[n_column] / n_mag
+        for m_column in sample_depths.columns:
+            if n_column == m_column:
+                pass
+            m_mag = sample_depths[m_column].abs()
+            m_exp = sample_depths[m_column] / m_mag
+            output["Auto_Terms_W"] = output["Auto_Terms_W"] + np.sqrt(n_mag * m_mag) * (
+                ((n_exp / m_exp) + (m_exp / n_exp)).abs()
+            )
+    output["Auto_Terms_W"] = output["Auto_Terms_W"] * source_power["Power_W"]
+
+    # IF this is the small noise, use aproximation
+    if small_signal:
+        output["DC_Terms_W"] = output["DC_Terms_W"] * 2
+        output["Cross_Terms_W"] = output["Cross_Terms_W"] * 2
+        output["Auto_Terms_W"] = output["Auto_Terms_W"] * 2
+    return output
+
+
 def _add_em_noise(input_dict: pd.DataFrame, rin_noise_pct, shot_noise) -> pd.DataFrame:
     """Adds power for poission noise, rin noise, and other source noises
 
@@ -293,16 +385,15 @@ def _get_time_delay(
 
             # Determine proper column name
             col_name = (
-                (column + "Depth_" + str(1000 * round(depth, 4)) + "mm")
+                (column + "Depth_" + str(1000 * round(depth, 16)) + "mm")
                 if preserve_name
-                else ("Depth_" + str(1000 * round(depth, 4)) + "mm")
+                else ("Depth_" + str(1000 * round(depth, 16)) + "mm")
             )
 
             # Calculate frequency shift and append new column
-            # TODO Definitionally this only works for small distances rel to lamda
             seen_depth = depth * ref_index * 2  # For both in and out of sample
             input_df_or_dict[col_name] = input_df_or_dict[column].to_numpy() * np.exp(
-                -1j * 2 * spc.pi * freq * seen_depth * spc.speed_of_light
+                -1j * 2 * spc.pi * freq * seen_depth / spc.speed_of_light
             )
     return
 
@@ -335,3 +426,48 @@ def _reduce_signal(
         (100 - reduce_pct) / 100
     )
     return
+
+
+def _select_depths(
+    em_data: Union[c.RecursiveDict, pd.DataFrame, None], depth_points: list
+):
+    """Recursive function to select depths in em_data
+
+    Parameters
+    ----------
+    em_data : Union[c.RecursiveDict, pd.DataFrame, None]
+        Recursively searched em_data object
+    depth_points : list
+        Which points will be kept
+
+    Raises
+    ------
+    RuntimeError
+        Error is raised when not all depths can be grabbed
+    """
+    if isinstance(em_data, Dict):
+        for key in em_data:
+            _select_depths(em_data[key], depth_points)
+        return
+    if em_data is None:
+        return
+    only_depths = em_data.loc[:, em_data.columns.str.contains("Depth")]
+    non_depth = ~em_data.columns.str.contains("Depth")
+    drop_depths = only_depths.iloc[:, depth_points]
+    rows_to_remove = ~np.bitwise_or(
+        em_data.columns.str.contains("|".join(list(drop_depths.columns))), non_depth
+    )
+    em_data.drop(list(em_data.iloc[:, rows_to_remove].columns), axis=1, inplace=True)
+
+    # drop_depths = only_depths.iloc[:, depth_points]
+    # em_data = em_data.loc[
+    #     :,
+    #     np.bitwise_or(
+    #         em_data.columns.str.contains("|".join(list(only_depths.columns))), non_depth
+    #     ),
+    # ]
+    return
+
+
+def _get_depth(depth_df: pd.DataFrame) -> pd.DataFrame:
+    return depth_df.loc[:, depth_df.columns.str.contains("Depth")]

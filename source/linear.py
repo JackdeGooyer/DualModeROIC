@@ -1,10 +1,11 @@
-# Related to all code for the linear section
+"""Related to all code for linear electronic operations"""
 
 # DC shot noise - dark current based
 # Thernal noise - cap dependent (RC)
 
 import math
 import pandas as pd
+import numpy as np
 import scipy.constants as spc
 
 
@@ -37,76 +38,100 @@ def amp_to_frequency(
         Dataframe containing output frequencies
     """
 
-    df = current_df.copy(deep=True)
+    out_df = current_df.copy(deep=True)
 
-    for column in df:
+    for column in out_df:
         if column == "Wavelength_nm" or column == "Detector":
             pass
 
         # Perform Conversion
-        time_to_charge = df[column] / (capacitor * threshold_voltage)
-        df[column] = 1 / (time_to_charge + reset_time)
+        time_to_charge = out_df[column] / (capacitor * threshold_voltage)
+        out_df[column] = 1 / (time_to_charge + reset_time)
 
         # Add reset jitter # TODO Change this
         if reset_jitter is not None:
-            df[column] = df[column] + (1 / reset_jitter)
+            out_df[column] = out_df[column] + (1 / reset_jitter)
 
-    return df
+    return out_df
 
 
-def linear_noise(
-    dc_current_df: pd.DataFrame,
-    capacitance: pd.DataFrame,
-    detector_resistance: float = None,
+def add_thermal_noise(
+    current_df: pd.DataFrame,
+    resistance: float,
+    capacitance: float,
     temperature: float = 300,
 ) -> pd.DataFrame:
-    """Compute the noise of the linear system
+    """
 
     Parameters
     ----------
-    dc_current_df : pd.DataFrame
-        Noise currents to have noises added to
-    capacitance : pd.DataFrame
-        Capacitance of frequency converter cap
-    detector_resistance : float
-        rd of detector, if measured, by default None
+    current_df : pd.DataFrame
+        Template dataframe
+    resistance : float
+        Resistance of detector
+    capacitance : float
+        Measuring capacitor
     temperature : float, optional
-        Temperature of detector, by default 300
+        Operating temperature, by default 300
 
     Returns
     -------
     pd.DataFrame
-        Dataframe with noise currents
+        _description_
+    """
+    out_df = current_df.copy(deep=True)
+    thermal_voltage = np.sqrt(spc.Boltzmann * temperature / capacitance)
+    thermal_current = thermal_voltage / resistance
+    out_df["Thermal_Noise_A_rms"] = thermal_current
+    out_df = out_df.loc[:, ["Wavelength_nm", "Detector", "Thermal_Noise_A_rms"]]
+    return out_df
+
+
+def add_shot_noise(
+    current_df: pd.DataFrame,
+    resistance: float,
+    capacitance: float,
+) -> pd.DataFrame:
+    """Adds the shot noise to the detector
+
+    Parameters
+    ----------
+    current_df : pd.DataFrame
+        Current to get DC shot noise from
+    resistance : float
+        Detector Resistance
+    capacitance : float
+        Capacitance on detector
+
+    Returns
+    -------
+    pd.DataFrame
+        Dataframe containing shot noise per detector
     """
 
-    df = dc_current_df.copy(deep=True)
+    total_current_per_detector = current_df.loc[
+        :, ~current_df.columns.str.contains("Wavelength_nm|Detector")
+    ].sum(axis=1)
+    out_df = current_df.copy(deep=True)
+    bandwidth = 1 / (capacitance * resistance)
+    out_df["Shot_Noise_A_rms"] = np.sqrt(
+        spc.elementary_charge * 2 * total_current_per_detector * bandwidth
+    )
+    out_df = out_df.loc[:, ["Wavelength_nm", "Detector", "Shot_Noise_A_rms"]].copy(
+        deep=True
+    )
+    return out_df
 
-    # Thermal Shot Noise = kT/C
-    thermal_current_noise = spc.Boltzmann * temperature / capacitance
 
-    # DC Shot Noise  -- get bandwidth (RC?) - is it by the diode resistance + cap?
-    for column in df.columns:
-        if column == "Wavelength_nm" or column == "Detector":
-            pass
-        if detector_resistance is None:
-            detector_resistance = (
-                spc.Boltzmann
-                * temperature
-                / (dc_current_df[column] * spc.elementary_charge)
-            )
-
-        # Add Thermal Noise
-        df[column] = thermal_current_noise
-
-        # Add Shot Noise
-        bandwidth = 1 / (
-            capacitance * detector_resistance
-        )  # TODO fix this, spectral. Or maybe, make it do the integral.
-        diode_shot_noise = math.sqrt(
-            spc.elementary_charge * 2 * dc_current_df[column]
-        ) * (bandwidth)
-
-        # Save Result
-        df[column] = df[column] + diode_shot_noise
-
-    return df
+# def add_reset_noise(
+#     current_df: pd.DataFrame,
+#     capacitance: float,
+#     reset_voltage: float,
+#     reset_time: float,
+# ) -> pd.DataFrame:
+#     total_current_per_detector = current_df.loc[
+#         :, ~current_df.columns.str.contains("Wavelength_nm|Detector")
+#     ].sum(axis=1)
+#     # SNR is 1 when the reset time is equal to the smallest bit
+#     # Ask peter how to do
+#     return
