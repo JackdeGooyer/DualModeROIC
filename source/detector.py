@@ -119,8 +119,10 @@ def _convert_em_to_channels(
     # Add dark current (optional)
     if include_dc_dark_current:
         interpt_dark_current = interpolate.interp1d(
-            responsivity["Wavelength_nm"], responsivity["Dark_Current_A"],         bounds_error=False,
-        fill_value="extrapolate",
+            responsivity["Wavelength_nm"],
+            responsivity["Dark_Current_A"],
+            bounds_error=False,
+            fill_value="extrapolate",
         )
         detector_df["Dark_Current_A"] = interpt_dark_current(
             detector_df["Wavelength_nm"]

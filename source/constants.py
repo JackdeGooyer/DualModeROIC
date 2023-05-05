@@ -31,7 +31,7 @@ DETECTOR_AREA = DETECTOR_HEIGHT * DETECTOR_WIDTH  # m^2
 REFERENCE_REFLECTIVITY_PCT = 100.0
 BEAM_SPLIT_REF_PCT = 50.0  # Sample/Reference
 BEAM_LOSSES_PCT = 10.0
-RIN_NOISE_PCT = 0.05 # Changed from 1
+RIN_NOISE_PCT = 0.05  # Changed from 1
 
 # Sample Specs
 SAMPLE_REFLECTIVITY_PCT = 1.0
@@ -44,6 +44,11 @@ RESET_TIME = 10e-09  # s
 TDC_JITTER = 1e-09  # s
 BUFFER_GAIN = 1.0  # V/V
 VOLTAGE_THRESHOLD = 3.3  # V
+
+# ADC Specs
+MIN_SAMPLE_RATE = 400000.0  # Hz
+ADC_BITS = 15  # Bits (Ceil(Log2((1/(MIN_SAMPLE_RATE)/TDC_RESOLUTION))))
+TDC_RESOLUTION = 100 * 10 ^ -12  # S
 
 # File Paths
 BASEDIR = Path(__file__).resolve().parent.parent

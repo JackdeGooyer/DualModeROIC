@@ -29,6 +29,11 @@ from linear import (
     de_integrate_current_on_capacitor,
     de_voltage_noise_to_jitter,
 )
+from tdc import (
+    frequency_signal_to_bits,
+    de_frequency_to_bits,
+    frequency_noise_to_bits,
+)
 
 
 class OCTSim:
@@ -39,6 +44,7 @@ class OCTSim:
     em_data_template: c.RecursiveDict = {"input": {"signal": True, "noise": {}}}
     detector_data: c.RecursiveDict = None
     frequency_data: c.RecursiveDict = None
+    output_data: c.RecursiveDict = None
 
     # Files
     _responsivity_path: Path = c.DEFAULT_RESPONSIVITY_FILEPATH
@@ -59,7 +65,6 @@ class OCTSim:
     sample_depth: float = c.DEFAULT_SAMPLE_DEPTH
 
     # Engineering Parameter
-    sample_rate: float = c.SAMPLE_RATE
     number_of_detectors: int = c.DETECTOR_NUMBER
     detector_area: int = c.DETECTOR_AREA
     detector_bias_voltage: float = c.DETECTOR_VOLTAGE
@@ -78,6 +83,11 @@ class OCTSim:
     TDC_jitter: float = c.TDC_JITTER
     buffer_gain: float = c.BUFFER_GAIN
     threshold_voltage: float = c.VOLTAGE_THRESHOLD
+
+    # ADC Specs
+    min_sample_rate = c.MIN_SAMPLE_RATE
+    adc_bits = c.ADC_BITS
+    tdc_resolution = c.TDC_RESOLUTION
 
     # Sample Specs
     sample_reflect_pct: float = c.SAMPLE_REFLECTIVITY_PCT
@@ -237,6 +247,19 @@ class OCTSim:
         )
         return
 
+    def perform_quantization(self):
+        """Convert Frequency to Digital Bits"""
+        return
+        self.output_data["signal"] = frequency_signal_to_bits(
+            self.frequency_data["signal"]
+        )
+        self.output_data["noise"] = frequency_noise_to_bits(
+            self.frequency_data["signal"], self.frequency_data["noise"]
+        )
+
+    # Add quantization noise as a constant (?)
+    # Find error and use that as a noise?
+
     def back_convert_noises(self):
         """Back propogates noise to input"""
         self.detector_data["voltage_noise"] = de_voltage_noise_to_jitter(
@@ -342,6 +365,9 @@ class OCTSim:
         # Convert to Frequencies and Jitter
         self.perform_frequency_conversion()
 
+        # Convert to Digital Bits
+        self.perform_quantization()
+
         # Back convert all types
         self.back_convert_noises()
 
@@ -379,7 +405,7 @@ if __name__ == "__main__":
     for input_power in np.logspace(-15, 1, 100, base=10):
         for capacitance in np.arange(0.1e-12, 1e-12, 0.1e-12):
 
-            capacitance = 1e-9
+            # capacitance = 1e-9
 
             # Run Sim
             DetectorSim = OCTSim()
@@ -446,7 +472,6 @@ if __name__ == "__main__":
             detector_data = pd.concat([detector_data, pd.DataFrame(cap_data)])
             detector_snr_data = pd.concat([detector_snr_data, pd.DataFrame(snr_data)])
 
-            break  # Remove for multi cap
 
     detector_data["Capacitance [pF]"] = detector_data["Capacitance [pF]"] * 1e12
     fig = px.line(
@@ -463,23 +488,23 @@ if __name__ == "__main__":
         color="Signal Type",
     )
     fig.show()
-    # fig = px.scatter_3d(
-    #     detector_data,
-    #     x="Input Power [W]",
-    #     z="Signal Magnitude [A]",
-    #     y="Capacitance [pF]",
-    #     color="Signal Type",
-    # )
-    # fig.show()
+    fig = px.scatter_3d(
+        detector_data,
+        x="Input Power [W]",
+        z="Signal Magnitude [A]",
+        y="Capacitance [pF]",
+        color="Signal Type",
+    )
+    fig.show()
 
-    # fig = px.scatter_3d(
-    #     detector_snr_data,
-    #     x="Input Power [W]",
-    #     z="SNR",
-    #     y="Capacitance [pF]",
-    #     color="Signal Type",
-    # )
-    # fig.show()
+    fig = px.scatter_3d(
+        detector_snr_data,
+        x="Input Power [W]",
+        z="SNR",
+        y="Capacitance [pF]",
+        color="Signal Type",
+    )
+    fig.show()
 
     # Plot SNR versus signal 2d, SNR, input power, for a particular capacitance
     # Start of input
