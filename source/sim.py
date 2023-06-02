@@ -20,19 +20,20 @@ from laser_source import generate_source
 from linear import (
     get_total_current,
     get_total_noise,
-    integrate_current_on_capacitor,
-    amp_to_frequency,
+    integrate_current_noise_on_capacitor,
+    amp_to_period,
     voltage_noise_to_jitter,
     add_shot_noise,
     add_thermal_noise,
-    add_tdc_jitter,
+    add_amplifier_noise,
     de_integrate_current_on_capacitor,
     de_voltage_noise_to_jitter,
 )
 from tdc import (
-    frequency_signal_to_bits,
-    de_frequency_to_bits,
-    frequency_noise_to_bits,
+    add_tdc_jitter,
+    period_signal_to_bits,
+    period_noise_to_bits,
+    de_period_noise_to_bits,
 )
 
 
@@ -68,7 +69,7 @@ class OCTSim:
     number_of_detectors: int = c.DETECTOR_NUMBER
     detector_area: int = c.DETECTOR_AREA
     detector_bias_voltage: float = c.DETECTOR_VOLTAGE
-    detector_resistance: float = c.DETECTOR_RESISTANCE
+    detector_resistance: float = None
     temperature: float = c.TEMPERATURE
 
     # OCT Beam Params
@@ -80,14 +81,16 @@ class OCTSim:
     # Linear Values
     linear_cap: float = c.CAPACITOR
     reset_time: float = c.RESET_TIME
-    TDC_jitter: float = c.TDC_JITTER
+    TDC_LSB: float = c.TDC_LSB
     buffer_gain: float = c.BUFFER_GAIN
     threshold_voltage: float = c.VOLTAGE_THRESHOLD
+    parasitic_cap: float = c.PARASITIC_CAP
+    bandwidth_aprox: float = c.APROX_BANDWIDTH
+    default_noise: float = c.INTERFACE_NOISE
 
     # ADC Specs
-    min_sample_rate = c.MIN_SAMPLE_RATE
+    sample_rate = c.SAMPLE_RATE
     adc_bits = c.ADC_BITS
-    tdc_resolution = c.TDC_RESOLUTION
 
     # Sample Specs
     sample_reflect_pct: float = c.SAMPLE_REFLECTIVITY_PCT
@@ -103,8 +106,7 @@ class OCTSim:
         self.em_data = dict()
         self.reflectivity = dict()
         self.detector_data = dict()
-        self.frequency_data = dict()
-        return
+        self.amplifier_tranimpedance = 1 / (self.sample_rate * self.linear_cap)
 
     def perform_oct_sim(self):
         """Perform all required simulation for the OCT portion of the device"""
@@ -183,6 +185,19 @@ class OCTSim:
             )
         return
 
+    def simplify_sim(self):
+        """Removes all complexity from OCT portion of simulation and noise"""
+        self.em_data["output"] = {
+            "signal": self.em_data["input"]["signal"],
+            "noise": {},
+        }
+        self.em_data["output"]["signal"] = self.em_data["output"]["signal"].rename(
+            columns={"Power_W": "Signal_W"}
+        )
+        self.em_data["output"]["signal"].iloc[0]["Input_W"] = self.total_source_power
+        self.em_data["output"]["signal"] = self.em_data["output"]["signal"].loc[[0]]
+        return
+
     def perform_detector_sampling(self):
         """Perform all required simulation for Spectrometor Beam to Detector Channels"""
         # Convert Each Individually
@@ -204,73 +219,104 @@ class OCTSim:
         )
         return
 
-    def add_linear_noise(self):
-        """Add noises from various features"""
-        self.detector_data["current_noise"]["shot_noise"] = add_shot_noise(
-            self.detector_data["signal"],
+    def add_linear_current_noise(self):
+        """Add noises for currents"""
+        self.detector_data["current_noise"]["signal_shot_noise"] = add_shot_noise(
+            self.detector_data["signal"].loc[
+                :, ~self.detector_data["signal"].columns.str.contains("Dark_Current_A")
+            ],
             resistance=self.detector_resistance,
             capacitance=self.linear_cap,
+            override_bandwidth=self.bandwidth_aprox,
         )
-        self.detector_data["current_noise"]["thermal_noise"] = add_thermal_noise(
-            self.detector_data["signal"],
-            temperature=self.temperature,
+        self.detector_data["current_noise"]["dark_shot_noise"] = add_shot_noise(
+            self.detector_data["signal"][
+                ["Detector", "Wavelength_nm", "Dark_Current_A"]
+            ],
             resistance=self.detector_resistance,
             capacitance=self.linear_cap,
+            override_bandwidth=self.bandwidth_aprox,
         )
         return
 
     def integrate_current_noise(self):
         """Turn current noise into voltage noise"""
         self.detector_data["voltage_noise"] = dict()
-        total_current = get_total_current(self.detector_data["signal"])
-        self.detector_data["voltage_noise"] = integrate_current_on_capacitor(
-            self.detector_data["current_noise"],
-            total_current,
-            self.linear_cap,
-            self.threshold_voltage,
+        self.detector_data["voltage_noise"] = integrate_current_noise_on_capacitor(
+            self.detector_data["current_noise"], self.linear_cap, self.sample_rate
         )
         return
 
-    def perform_frequency_conversion(self):
+    def add_linear_voltage_noise(self):
+        """Add noises for voltage"""
+        self.detector_data["voltage_noise"]["thermal_noise"] = add_thermal_noise(
+            self.detector_data["signal"],
+            temperature=self.temperature,
+            capacitance=self.linear_cap,
+        )
+
+        # # Add Noise from amplifier, assuming equal thermal noise as linear cap
+        # self.detector_data["voltage_noise"][
+        #     "amplifier_thermal_noise"
+        # ] = self.detector_data["current_noise"]["thermal_noise"].copy(deep=True) * (
+        #     1 + self.parasitic_cap / self.linear_cap
+        # )
+
+        # Add Noise from amplifier, assuming equal thermal noise as linear cap
+
+        self.detector_data["voltage_noise"][
+            "amplifier_thermal_noise"
+        ] = add_amplifier_noise(
+            self.detector_data["signal"],
+            bandwidth=self.bandwidth_aprox,
+            default_noise=self.default_noise,
+        )
+
+    def perform_period_conversion(self):
         """Turn current and voltage noise into freq and jitter"""
-        self.frequency_data["signal"] = amp_to_frequency(
+        self.detector_data["signal"]["Signal_s"] = amp_to_period(
             self.detector_data["signal"], self.linear_cap, self.threshold_voltage
         )
-        self.frequency_data["jitter"] = voltage_noise_to_jitter(
+        self.detector_data["time_noise"] = voltage_noise_to_jitter(
             self.detector_data["voltage_noise"],
             self.detector_data["signal"],
             self.linear_cap,
         )
-        self.frequency_data["jitter"]["TDC"] = add_tdc_jitter(
-            self.frequency_data["jitter"][list(self.frequency_data["jitter"])[0]],
-            self.TDC_jitter,
-        )
         return
+
+    def add_time_noise(self):
+        """Adds jitter/quantization noise"""
+        self.detector_data["time_noise"]["TDC_quantization"] = add_tdc_jitter(
+            self.detector_data["signal"],
+            np.sqrt((self.TDC_LSB**2) / 12),
+        )
 
     def perform_quantization(self):
         """Convert Frequency to Digital Bits"""
-        return
-        self.output_data["signal"] = frequency_signal_to_bits(
-            self.frequency_data["signal"]
+        self.detector_data["signal"]["Signal_B"] = period_signal_to_bits(
+            self.detector_data["signal"],
+            min_sample_freq=self.sample_rate,
+            lsb=self.TDC_LSB,
+            bits=self.adc_bits,
         )
-        self.output_data["noise"] = frequency_noise_to_bits(
-            self.frequency_data["signal"], self.frequency_data["noise"]
+        self.detector_data["bit_noise"] = period_noise_to_bits(
+            self.detector_data["time_noise"], lsb=self.TDC_LSB
         )
-
-    # Add quantization noise as a constant (?)
-    # Find error and use that as a noise?
 
     def back_convert_noises(self):
         """Back propogates noise to input"""
-        self.detector_data["voltage_noise"] = de_voltage_noise_to_jitter(
-            self.frequency_data["jitter"], self.detector_data["signal"], self.linear_cap
+        self.detector_data["time_noise"] = de_period_noise_to_bits(
+            self.detector_data["bit_noise"], lsb=self.TDC_LSB
         )
-        total_current = get_total_current(self.detector_data["signal"])
+        self.detector_data["voltage_noise"] = de_voltage_noise_to_jitter(
+            self.detector_data["time_noise"],
+            self.detector_data["signal"],
+            self.linear_cap,
+        )
         self.detector_data["current_noise"] = de_integrate_current_on_capacitor(
             self.detector_data["voltage_noise"],
-            total_current,
             self.linear_cap,
-            self.threshold_voltage,
+            self.sample_rate,
         )
         return
 
@@ -342,28 +388,35 @@ class OCTSim:
                     relfectivity[physical_loc][sig_type][column] = 1
         return relfectivity
 
-    def run(self):
+    def run(self, complex_sim: bool = False):
         """Performs simulation of device"""
-
-        # Interpolate TODO
 
         # Perform simulations of source to bs
         self.perform_oct_sim()
 
         # Interfere waves
-        self.interfere_waves()
+        if complex_sim:
+            self.interfere_waves()
+        else:
+            self.simplify_sim()
 
         # Convert to Linear Detections
         self.perform_detector_sampling()
 
-        # Peform Linear Measurements
-        self.add_linear_noise()
+        # Add shot noises
+        self.add_linear_current_noise()
 
         # Perform Integration on Capacitor
         self.integrate_current_noise()
 
+        # Add reset and themral noise
+        self.add_linear_voltage_noise()
+
         # Convert to Frequencies and Jitter
-        self.perform_frequency_conversion()
+        self.perform_period_conversion()
+
+        # Add jitter and quantization noises
+        self.add_time_noise()
 
         # Convert to Digital Bits
         self.perform_quantization()
@@ -371,19 +424,10 @@ class OCTSim:
         # Back convert all types
         self.back_convert_noises()
 
-        # Convert to APD Detectins
-
-        # Perform APD Measurements
-
-        # Determine timing jitter to noise constant
-
-        # Get noise at each output
-
         return
 
 
 if __name__ == "__main__":
-
     detector_data = pd.DataFrame(
         columns=[
             "Magnitude [A]",
@@ -400,31 +444,69 @@ if __name__ == "__main__":
             "Capacitance [pF]",
         ]
     )
+    detector_time_data = pd.DataFrame(
+        columns=[
+            "Magnitude [s]",
+            "Input Power [W]",
+            "Signal Type",
+            "Capacitance [pF]",
+        ]
+    )
+    detector_snr_time_data = pd.DataFrame(
+        columns=[
+            "SNR",
+            "Input Power [W]",
+            "Signal Type",
+            "Capacitance [pF]",
+        ]
+    )
 
-    selected_detector = 512
+    res_file = pd.read_csv(c.DEFAULT_RESPONSIVITY_FILEPATH, index_col=False)
     for input_power in np.logspace(-15, 1, 100, base=10):
-        for capacitance in np.arange(0.1e-12, 1e-12, 0.1e-12):
-
-            # capacitance = 1e-9
-
+        for capacitance in np.arange(22e-15, 220e-15, 10e-15):
             # Run Sim
-            DetectorSim = OCTSim()
+            DetectorSim = OCTSim(responsivity=res_file)
             DetectorSim.total_source_power = input_power
             DetectorSim.linear_cap = capacitance
-            DetectorSim.run()
+            DetectorSim.run(complex_sim=False)
+            selected_detector = round(len(DetectorSim.detector_data["signal"]) / 2)
+
+            min_valid_current = np.log10(
+                c.VOLTAGE_THRESHOLD * c.CAPACITOR * c.SAMPLE_RATE
+            )
 
             #  Get Signal
             cap_data = []
             snr_data = []
-            signal = get_total_current(
-                DetectorSim.detector_data["signal"][
-                    ["DC_Terms_A", "Cross_Terms_A", "Auto_Terms_A"]
-                ]
-            )[selected_detector]
+            cap_time_data = []
+            snr_time_data = []
+
+            # signal = get_total_current(
+            #     DetectorSim.detector_data["signal"][
+            #         DetectorSim.detector_data["signal"].columns.intersection(
+            #             set(["DC_Terms_A", "Cross_Terms_A", "Auto_Terms_A", "Signal_A"])
+            #         )
+            #     ]
+            # )[selected_detector]
+
+            signal = DetectorSim.detector_data["signal"]["Signal_A"][selected_detector]
+            time_signal = DetectorSim.detector_data["signal"]["Signal_s"][
+                selected_detector
+            ]
+
             cap_data.append(
                 {
-                    "Signal Magnitude [A]": np.log(signal),
-                    "Input Power [W]": np.log(input_power),
+                    "Signal Magnitude [A]": np.log10(signal),
+                    "Input Power [W]": np.log10(input_power),
+                    "Signal Type": "Signal",
+                    "Capacitance [pF]": capacitance,
+                }
+            )
+
+            cap_time_data.append(
+                {
+                    "Signal Magnitude [s]": np.log10(time_signal),
+                    "Input Power [W]": np.log10(input_power),
                     "Signal Type": "Signal",
                     "Capacitance [pF]": capacitance,
                 }
@@ -432,46 +514,105 @@ if __name__ == "__main__":
 
             # Get Noises
             total_noise = 0
-            for column in ["photon_shot", "shot_noise", "thermal_noise", "TDC", "rin"]:
+            for column in [
+                "signal_shot_noise",
+                "dark_shot_noise",
+                "thermal_noise",
+                "amplifier_thermal_noise",
+                "TDC_quantization",
+            ]:
                 noise = get_total_noise(
                     DetectorSim.detector_data["current_noise"][column]
                 )[selected_detector]
                 total_noise = np.sqrt(np.power(total_noise, 2) + np.power(noise, 2))
                 cap_data.append(
                     {
-                        "Signal Magnitude [A]": np.log(noise),
-                        "Input Power [W]": np.log(input_power),
+                        "Signal Magnitude [A]": np.log10(noise),
+                        "Input Power [W]": np.log10(input_power),
                         "Signal Type": column,
                         "Capacitance [pF]": capacitance,
                     }
                 )
                 snr_data.append(
                     {
-                        "SNR": 20 * np.log(signal / noise),
-                        "Input Power [W]": np.log(input_power),
+                        "SNR": 20 * np.log10(signal / noise),
+                        "Input Power [W]": np.log10(input_power),
+                        "Signal Type": column,
+                        "Capacitance [pF]": capacitance,
+                    }
+                )
+
+            # Get Jitters
+            total_time_noise = 0
+            for column in [
+                "signal_shot_noise",
+                "dark_shot_noise",
+                "thermal_noise",
+                "amplifier_thermal_noise",
+                "TDC_quantization",
+            ]:
+                time_noise = get_total_noise(
+                    DetectorSim.detector_data["time_noise"][column]
+                )[selected_detector]
+                total_time_noise = np.sqrt(
+                    np.power(total_time_noise, 2) + np.power(time_noise, 2)
+                )
+                cap_time_data.append(
+                    {
+                        "Signal Magnitude [s]": np.log10(time_noise),
+                        "Input Power [W]": np.log10(input_power),
+                        "Signal Type": column,
+                        "Capacitance [pF]": capacitance,
+                    }
+                )
+                snr_time_data.append(
+                    {
+                        "SNR": 20 * np.log10(time_signal / time_noise),
+                        "Input Power [W]": np.log10(input_power),
                         "Signal Type": column,
                         "Capacitance [pF]": capacitance,
                     }
                 )
             cap_data.append(
                 {
-                    "Signal Magnitude [A]": np.log(total_noise),
-                    "Input Power [W]": np.log(input_power),
+                    "Signal Magnitude [A]": np.log10(total_noise),
+                    "Input Power [W]": np.log10(input_power),
                     "Signal Type": "Total Noise",
                     "Capacitance [pF]": capacitance,
                 }
             )
             snr_data.append(
                 {
-                    "SNR": 20 * np.log(signal / total_noise),
-                    "Input Power [W]": np.log(input_power),
+                    "SNR": 20 * np.log10(signal / total_noise),
+                    "Input Power [W]": np.log10(input_power),
+                    "Signal Type": "Total Noise",
+                    "Capacitance [pF]": capacitance,
+                }
+            )
+            cap_time_data.append(
+                {
+                    "Signal Magnitude [A]": np.log10(total_time_noise),
+                    "Input Power [W]": np.log10(input_power),
+                    "Signal Type": "Total Noise",
+                    "Capacitance [pF]": capacitance,
+                }
+            )
+            snr_time_data.append(
+                {
+                    "SNR": 20 * np.log10(time_signal / total_time_noise),
+                    "Input Power [W]": np.log10(input_power),
                     "Signal Type": "Total Noise",
                     "Capacitance [pF]": capacitance,
                 }
             )
             detector_data = pd.concat([detector_data, pd.DataFrame(cap_data)])
             detector_snr_data = pd.concat([detector_snr_data, pd.DataFrame(snr_data)])
-
+            detector_time_data = pd.concat(
+                [detector_time_data, pd.DataFrame(cap_time_data)]
+            )
+            detector_snr_time_data = pd.concat(
+                [detector_snr_time_data, pd.DataFrame(snr_time_data)]
+            )
 
     detector_data["Capacitance [pF]"] = detector_data["Capacitance [pF]"] * 1e12
     fig = px.line(
@@ -480,6 +621,7 @@ if __name__ == "__main__":
         y="Signal Magnitude [A]",
         color="Signal Type",
     )
+    fig.add_vline(x=min_valid_current, line_color="black")
     fig.show()
     fig = px.line(
         detector_snr_data,
@@ -487,7 +629,29 @@ if __name__ == "__main__":
         y="SNR",
         color="Signal Type",
     )
+    fig.add_vline(x=min_valid_current, line_color="black")
     fig.show()
+
+    detector_time_data["Capacitance [pF]"] = (
+        detector_time_data["Capacitance [pF]"] * 1e12
+    )
+    fig = px.line(
+        detector_time_data,
+        x="Input Power [W]",
+        y="Signal Magnitude [s]",
+        color="Signal Type",
+    )
+    fig.add_vline(x=min_valid_current, line_color="black")
+    fig.show()
+    fig = px.line(
+        detector_snr_time_data,
+        x="Input Power [W]",
+        y="SNR",
+        color="Signal Type",
+    )
+    fig.add_vline(x=min_valid_current, line_color="black")
+    fig.show()
+
     fig = px.scatter_3d(
         detector_data,
         x="Input Power [W]",
@@ -499,6 +663,24 @@ if __name__ == "__main__":
 
     fig = px.scatter_3d(
         detector_snr_data,
+        x="Input Power [W]",
+        z="SNR",
+        y="Capacitance [pF]",
+        color="Signal Type",
+    )
+    fig.show()
+
+    fig = px.scatter_3d(
+        detector_time_data,
+        x="Input Power [W]",
+        z="Signal Magnitude [s]",
+        y="Capacitance [pF]",
+        color="Signal Type",
+    )
+    fig.show()
+
+    fig = px.scatter_3d(
+        detector_snr_time_data,
         x="Input Power [W]",
         z="SNR",
         y="Capacitance [pF]",

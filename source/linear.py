@@ -11,29 +11,8 @@ import scipy.constants as spc
 import constants as c
 
 
-def add_tdc_jitter(template: pd.DataFrame, jitter: float) -> pd.DataFrame:
-    """Add the jitter from the TDC
-
-    Parameters
-    ----------
-    template : pd.DataFrame
-        Template for detector number and wavelengths
-    jitter : float
-        Total jitter
-
-    Returns
-    -------
-    pd.DataFrame
-        Dataframe containing formatted jitter
-    """
-    out_df = template[["Detector", "Wavelength_nm"]].copy(deep=True)
-    out_df["TDC_Noise_s^2"] = jitter
-    return out_df
-
-
 def add_thermal_noise(
     current_df: pd.DataFrame,
-    resistance: float,
     capacitance: float,
     temperature: float = 300,
 ) -> pd.DataFrame:
@@ -43,8 +22,6 @@ def add_thermal_noise(
     ----------
     current_df : pd.DataFrame
         Template dataframe
-    resistance : float
-        Resistance of detector
     capacitance : float
         Measuring capacitor
     temperature : float, optional
@@ -53,13 +30,38 @@ def add_thermal_noise(
     Returns
     -------
     pd.DataFrame
-        _description_
+        Dataframe contianing thermal voltage noise
     """
     out_df = current_df.copy(deep=True)
-    thermal_voltage = np.sqrt(spc.Boltzmann * temperature / capacitance)
-    thermal_current = thermal_voltage / resistance
-    out_df["Thermal_Noise_A_rms"] = thermal_current
-    out_df = out_df.loc[:, ["Wavelength_nm", "Detector", "Thermal_Noise_A_rms"]]
+    out_df["Thermal_Noise_V_rms"] = np.sqrt(spc.Boltzmann * temperature / capacitance)
+    out_df = out_df.loc[:, ["Wavelength_nm", "Detector", "Thermal_Noise_V_rms"]]
+    return out_df
+
+
+def add_amplifier_noise(
+    current_df: pd.DataFrame,
+    bandwidth: float,
+    default_noise: float,
+) -> pd.DataFrame:
+    """
+
+    Parameters
+    ----------
+    current_df : pd.DataFrame
+        Template dataframe
+    bandwidth : float
+        Bandwidth of device
+    default_noise: float
+        Voltage noise on interface (V/sqrt(Hz))
+
+    Returns
+    -------
+    pd.DataFrame
+        Dataframe contianing amplifier thermal voltage noise
+    """
+    out_df = current_df.copy(deep=True)
+    out_df["Amplifier_Noise_V_rms"] = np.sqrt(bandwidth) * default_noise
+    out_df = out_df.loc[:, ["Wavelength_nm", "Detector", "Amplifier_Noise_V_rms"]]
     return out_df
 
 
@@ -67,6 +69,7 @@ def add_shot_noise(
     current_df: pd.DataFrame,
     resistance: float,
     capacitance: float,
+    override_bandwidth: float = None,
 ) -> pd.DataFrame:
     """Adds the shot noise to the detector
 
@@ -78,6 +81,8 @@ def add_shot_noise(
         Detector Resistance
     capacitance : float
         Capacitance on detector
+    override_bandwidth : float, by default None
+        Banndwidth of system input
 
     Returns
     -------
@@ -85,9 +90,14 @@ def add_shot_noise(
         Dataframe containing shot noise per detector
     """
 
+    # Determine Bandwidth
+    if override_bandwidth is None:
+        bandwidth = 1 / (2 * np.pi * capacitance * resistance)
+    else:
+        bandwidth = override_bandwidth
+
     total_current_per_detector = get_total_current(current_df)
     out_df = current_df.copy(deep=True)
-    bandwidth = 1 / (capacitance * resistance)
     out_df["Shot_Noise_A_rms"] = np.sqrt(
         spc.elementary_charge * 2 * total_current_per_detector * bandwidth
     )
@@ -97,12 +107,12 @@ def add_shot_noise(
     return out_df
 
 
-def amp_to_frequency(
+def amp_to_period(
     current_df: pd.DataFrame,
     capacitor: float,
     threshold_voltage: float,
-) -> pd.DataFrame:
-    """Turns current to frequency
+) -> pd.Series:
+    """Turns current to period
 
     Parameters
     ----------
@@ -115,13 +125,12 @@ def amp_to_frequency(
 
     Returns
     -------
-    pd.DataFrame
-        Dataframe containing output frequencies
+    pd.Series
+        Dataframe containing output period
     """
-    out_df = current_df[["Detector", "Wavelength_nm"]].copy(deep=True)
-    out_df["Period_s"] = get_total_current(current_df) / (capacitor * threshold_voltage)
-    out_df["Frequency_Hz"] = 1 / out_df["Period_s"]
-    return out_df
+    return copy.deepcopy(
+        (capacitor * threshold_voltage) / get_total_current(current_df)
+    )
 
 
 def voltage_noise_to_jitter(
@@ -186,8 +195,8 @@ def _voltage_noise_to_jitter(
     total_current = get_total_current(current_df)
     voltage_rate = total_current / capacitor
     for column in noise[noise.columns.difference(["Detector", "Wavelength_nm"])]:
-        new_column = column.replace("_V_rms", "_s^2")
-        out_df[new_column] = (noise[column] ** 2) * (1 / (voltage_rate**2))
+        new_column = column.replace("_V_rms", "_s")
+        out_df[new_column] = np.sqrt((noise[column] ** 2) * (1 / (voltage_rate**2)))
     return out_df
 
 
@@ -212,7 +221,7 @@ def de_voltage_noise_to_jitter(
     Union[pd.DataFrame, c.RecursiveDict, None]
         Structure containing voltage noise
     """
-    out_noise = copy.deepcopy(noise)
+    noise = copy.deepcopy(noise)
     out_noise = _de_voltage_noise_to_jitter(noise, current_df, capacitor)
     return out_noise
 
@@ -253,16 +262,15 @@ def _de_voltage_noise_to_jitter(
     total_current = get_total_current(current_df)
     voltage_rate = total_current / capacitor
     for column in noise[noise.columns.difference(["Detector", "Wavelength_nm"])]:
-        new_column = column.replace("_s^2", "_V_rms")
-        out_df[new_column] = np.sqrt(noise[column] * voltage_rate**2)
+        new_column = column.replace("_s", "_V_rms")
+        out_df[new_column] = np.sqrt(noise[column] ** 2 * voltage_rate**2)
     return out_df
 
 
-def integrate_current_on_capacitor(
+def integrate_current_noise_on_capacitor(
     current_df_dict: Union[c.RecursiveDict, pd.DataFrame, None],
-    total_current: pd.Series,
     cap: float,
-    threshold: float,
+    reset_frequency: float,
 ) -> Union[c.RecursiveDict, Dict]:
     """Integrates current on capacitor
 
@@ -270,12 +278,10 @@ def integrate_current_on_capacitor(
     ----------
     current_df_dict : Union[c.RecursiveDict, pd.DataFrame, None]
         Current to integrate into the capacitor
-    total_current : pd.Series
-        Total current being integrated device
     cap : float
         Capacitor size
-    threshold : float
-        Switching voltage level
+    reset_frequency : float
+        Frequency of reset (sample rate)
 
     Returns
     -------
@@ -283,24 +289,22 @@ def integrate_current_on_capacitor(
         Voltages coresponding to currents
     """
     current_df_dict = copy.deepcopy(current_df_dict)
-    voltage_df_dict = _integrate_current_on_capacitor(
-        current_df_dict, total_current, cap, threshold
+    voltage_df_dict = _integrate_current_noise_on_capacitor(
+        current_df_dict, cap, reset_frequency
     )
     return voltage_df_dict
 
 
-def _integrate_current_on_capacitor(
+def _integrate_current_noise_on_capacitor(
     current_dict: Union[c.RecursiveDict, pd.DataFrame, None],
-    total_current: pd.Series,
     cap: float,
-    threshold: float,
+    reset_frequency: float,
 ) -> Union[pd.DataFrame, Dict]:
-
     # Check for type
     if isinstance(current_dict, Dict):
         for signal in current_dict:
-            current_dict[signal] = _integrate_current_on_capacitor(
-                current_dict[signal], total_current, cap, threshold
+            current_dict[signal] = _integrate_current_noise_on_capacitor(
+                current_dict[signal], cap, reset_frequency
             )
         return current_dict
     if current_dict is None:
@@ -314,16 +318,15 @@ def _integrate_current_on_capacitor(
     ]:
         new_column = column.replace("_A", "_V")
         voltage_df[new_column] = np.sqrt(
-            (threshold / (2 * total_current * cap)) * current_df[column] ** 2
+            ((1 / (cap * reset_frequency)) ** 2) * current_df[column] ** 2
         )
     return voltage_df
 
 
 def de_integrate_current_on_capacitor(
     voltage_df_dict: Union[c.RecursiveDict, pd.DataFrame, None],
-    total_current: pd.Series,
     cap: float,
-    threshold: float,
+    reset_frequency: float,
 ) -> Union[c.RecursiveDict, Dict]:
     """De Integrates current on capacitor, Voltage to Current
 
@@ -331,12 +334,10 @@ def de_integrate_current_on_capacitor(
     ----------
     voltage_df_dict : Union[c.RecursiveDict, pd.DataFrame, None]
         Voltage to de_integrate into the capacitor
-    total_current : pd.Series
-        Total current being integrated device
     cap : float
         Capacitor size
-    threshold : float
-        Switching voltage level
+    reset_frequency : float
+        Frequency of reset (sample rate)
 
     Returns
     -------
@@ -345,23 +346,21 @@ def de_integrate_current_on_capacitor(
     """
     voltage_df_dict = copy.deepcopy(voltage_df_dict)
     current_df_dict = _de_integrate_current_on_capacitor(
-        voltage_df_dict, total_current, cap, threshold
+        voltage_df_dict, cap, reset_frequency
     )
     return current_df_dict
 
 
 def _de_integrate_current_on_capacitor(
     voltage_dict: Union[c.RecursiveDict, pd.DataFrame, None],
-    total_current: pd.Series,
     cap: float,
-    threshold: float,
+    reset_frequency: float,
 ) -> Union[pd.DataFrame, Dict]:
-
     # Check for type
     if isinstance(voltage_dict, Dict):
         for signal in voltage_dict:
             voltage_dict[signal] = _de_integrate_current_on_capacitor(
-                voltage_dict[signal], total_current, cap, threshold
+                voltage_dict[signal], cap, reset_frequency
             )
         return voltage_dict
     if voltage_dict is None:
@@ -375,7 +374,7 @@ def _de_integrate_current_on_capacitor(
     ]:
         new_column = column.replace("_V", "_A")
         current_df[new_column] = np.sqrt(
-            (1 / (threshold / (2 * total_current * cap))) * voltage_df[column] ** 2
+            ((cap * reset_frequency) ** 2) * voltage_df[column] ** 2
         )
     return current_df
 
@@ -393,7 +392,10 @@ def get_total_current(df: pd.DataFrame) -> pd.Series:
     pd.DataFrame
         Total current in detector channels
     """
-    return df.loc[:, ~df.columns.str.contains("Wavelength_nm|Detector")].sum(axis=1)
+    return df.loc[:, ~df.columns.str.contains("Wavelength_nm|Detector|_[^A]$")].sum(
+        axis=1
+    )
+
 
 def get_total_noise(df: pd.DataFrame) -> pd.Series:
     """Gets all current in a dataframe given independent noises
@@ -408,7 +410,9 @@ def get_total_noise(df: pd.DataFrame) -> pd.Series:
     pd.Series
         Total noise current in detector channels
     """
-    return np.sqrt(df.loc[:, ~df.columns.str.contains("Wavelength_nm|Detector")].pow(2).sum(axis=1))
+    return np.sqrt(
+        df.loc[:, ~df.columns.str.contains("Wavelength_nm|Detector")].pow(2).sum(axis=1)
+    )
 
 
 # def add_reset_noise(

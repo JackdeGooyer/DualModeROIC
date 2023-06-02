@@ -60,7 +60,6 @@ def _convert_em_to_channels(
     detector_area: float,
     include_dc_dark_current: bool = False,
 ) -> Union[c.RecursiveDict, pd.DataFrame, None]:
-
     # Check for type
     if isinstance(em_dict, Dict):
         for signal in em_dict:
@@ -84,7 +83,9 @@ def _convert_em_to_channels(
     upscale_factor = len(em_df.index) / no_detectors
     max_w = em_df["Wavelength_nm"].max()
     min_w = em_df["Wavelength_nm"].min()
-    wavelength = np.arange(min_w, max_w, (max_w - min_w) / no_detectors)
+    wavelength = (
+        max_w if np.equal else np.arange(min_w, max_w, (max_w - min_w) / no_detectors)
+    )
     detector_df["Wavelength_nm"] = wavelength
 
     # Interpolate Responsivity (again...)
@@ -106,10 +107,13 @@ def _convert_em_to_channels(
         new_col_name = re.sub("_W$", "_A", column)
 
         # Resample input current to detectors
-        interpolate_data = interpolate.interp1d(
-            em_df["Wavelength_nm"], em_df[column], kind="linear"
-        )
-        detector_df[new_col_name] = interpolate_data(detector_df["Wavelength_nm"])
+        try:
+            interpolate_data = interpolate.interp1d(
+                em_df["Wavelength_nm"], em_df[column], kind="linear"
+            )
+            detector_df[new_col_name] = interpolate_data(detector_df["Wavelength_nm"])
+        except ValueError:
+            detector_df[new_col_name] = em_df[column].iloc[0]
 
         # Integrate over detectors
         detector_df[new_col_name] = (
@@ -154,9 +158,7 @@ def get_responsivity(
     """
     responsivity = interpolate_bias_responsivity(responsivity_df, bias)
     responsivity["Dark_Current_A"] = responsivity["Dark_Current_A_m^2"] * detector_area
-    responsivity["Responsivity_A_W"] = (
-        responsivity["Responsivity_A_W_m^2"] * detector_area
-    )
+    responsivity["Responsivity_A_W"] = responsivity["Responsivity_A_W"]
     return responsivity
 
 
