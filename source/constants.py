@@ -52,5 +52,5 @@ ADC_BITS = 15  # Bits (Ceil(Log2((1/(MIN_SAMPLE_RATE)/TDC_RESOLUTION))))
 
 # File Paths
 BASEDIR = Path(__file__).resolve().parent.parent
-DEFAULT_RESPONSIVITY_FILEPATH = BASEDIR.joinpath(r"Data\DetectorResponsivity.csv")
+DEFAULT_RESPONSIVITY_FILEPATH = BASEDIR.joinpath(r"Data\DetectorResponsivity_InP.csv")
 DEFAULT_SOURCE_FILEPATH = BASEDIR.joinpath(r"Data\SourcePower.csv")

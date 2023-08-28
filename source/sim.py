@@ -18,7 +18,6 @@ import numpy as np
 import plotly.express as px
 from laser_source import generate_source
 from linear import (
-    get_total_current,
     get_total_noise,
     integrate_current_noise_on_capacitor,
     amp_to_period,
@@ -194,7 +193,7 @@ class OCTSim:
         self.em_data["output"]["signal"] = self.em_data["output"]["signal"].rename(
             columns={"Power_W": "Signal_W"}
         )
-        self.em_data["output"]["signal"].iloc[0]["Input_W"] = self.total_source_power
+        self.em_data["output"]["signal"].iloc[0]["Signal_W"] = self.total_source_power
         self.em_data["output"]["signal"] = self.em_data["output"]["signal"].loc[[0]]
         return
 
@@ -270,6 +269,8 @@ class OCTSim:
             self.detector_data["signal"],
             bandwidth=self.bandwidth_aprox,
             default_noise=self.default_noise,
+        ) * (
+            1 + self.parasitic_cap / self.linear_cap
         )
 
     def perform_period_conversion(self):
@@ -461,9 +462,10 @@ if __name__ == "__main__":
         ]
     )
 
+    max_optical_power = np.log10(0.0012)  # 1.2mW of power maximum
     res_file = pd.read_csv(c.DEFAULT_RESPONSIVITY_FILEPATH, index_col=False)
-    for input_power in np.logspace(-15, 1, 100, base=10):
-        for capacitance in np.arange(22e-15, 220e-15, 10e-15):
+    for input_power in np.logspace(-20, 2, 100, base=10):
+        for capacitance in np.arange(1e-15, 22e-15, 1e-15):
             # Run Sim
             DetectorSim = OCTSim(responsivity=res_file)
             DetectorSim.total_source_power = input_power
@@ -472,8 +474,19 @@ if __name__ == "__main__":
             selected_detector = round(len(DetectorSim.detector_data["signal"]) / 2)
 
             min_valid_current = np.log10(
-                c.VOLTAGE_THRESHOLD * c.CAPACITOR * c.SAMPLE_RATE
+                (
+                    (c.VOLTAGE_THRESHOLD * capacitance * c.SAMPLE_RATE)
+                    - DetectorSim.detector_data["signal"]["Dark_Current_A"].iloc[0]
+                )
             )
+            min_valid_current_elec = np.log10(
+                (
+                    (c.VOLTAGE_THRESHOLD * capacitance * c.SAMPLE_RATE)
+                    - DetectorSim.detector_data["signal"]["Dark_Current_A"].iloc[0]
+                )
+                * 6.24e18
+            )
+            min_valid_time = np.log10(1 / c.SAMPLE_RATE)
 
             #  Get Signal
             cap_data = []
@@ -497,6 +510,9 @@ if __name__ == "__main__":
             cap_data.append(
                 {
                     "Signal Magnitude [A]": np.log10(signal),
+                    "Signal Magnitude [e/sample]": np.log10(
+                        signal * 6.24e18 / c.SAMPLE_RATE
+                    ),
                     "Input Power [W]": np.log10(input_power),
                     "Signal Type": "Signal",
                     "Capacitance [pF]": capacitance,
@@ -514,6 +530,7 @@ if __name__ == "__main__":
 
             # Get Noises
             total_noise = 0
+            total_voltage_noise = 0
             for column in [
                 "signal_shot_noise",
                 "dark_shot_noise",
@@ -524,10 +541,20 @@ if __name__ == "__main__":
                 noise = get_total_noise(
                     DetectorSim.detector_data["current_noise"][column]
                 )[selected_detector]
+                voltage_noise = get_total_noise(
+                    DetectorSim.detector_data["voltage_noise"][column]
+                )[selected_detector]
                 total_noise = np.sqrt(np.power(total_noise, 2) + np.power(noise, 2))
+                total_voltage_noise = np.sqrt(
+                    np.power(total_voltage_noise, 2) + np.power(voltage_noise, 2)
+                )
                 cap_data.append(
                     {
                         "Signal Magnitude [A]": np.log10(noise),
+                        "Signal Magnitude [e/sample]": np.log10(
+                            noise * 6.24e18 / c.SAMPLE_RATE
+                        ),
+                        "Signal Magnitude [V]": np.log10(voltage_noise),
                         "Input Power [W]": np.log10(input_power),
                         "Signal Type": column,
                         "Capacitance [pF]": capacitance,
@@ -576,6 +603,10 @@ if __name__ == "__main__":
             cap_data.append(
                 {
                     "Signal Magnitude [A]": np.log10(total_noise),
+                    "Signal Magnitude [e/sample]": np.log10(
+                        total_noise * 6.24e18 / c.SAMPLE_RATE
+                    ),
+                    "Signal Magnitude [V]": np.log10(total_voltage_noise),
                     "Input Power [W]": np.log10(input_power),
                     "Signal Type": "Total Noise",
                     "Capacitance [pF]": capacitance,
@@ -614,6 +645,9 @@ if __name__ == "__main__":
                 [detector_snr_time_data, pd.DataFrame(snr_time_data)]
             )
 
+            break
+
+    print(f"Total Voltage Noise is: {total_voltage_noise}")
     detector_data["Capacitance [pF]"] = detector_data["Capacitance [pF]"] * 1e12
     fig = px.line(
         detector_data,
@@ -621,72 +655,97 @@ if __name__ == "__main__":
         y="Signal Magnitude [A]",
         color="Signal Type",
     )
-    fig.add_vline(x=min_valid_current, line_color="black")
-    fig.show()
-    fig = px.line(
-        detector_snr_data,
-        x="Input Power [W]",
-        y="SNR",
-        color="Signal Type",
-    )
-    fig.add_vline(x=min_valid_current, line_color="black")
+    if not np.isnan(min_valid_current):
+        fig.add_hline(y=min_valid_current, line_color="black")
+    fig.add_vline(x=max_optical_power, line_color="black")
+    fig.update_yaxes(range=[-20, -0])
     fig.show()
 
-    detector_time_data["Capacitance [pF]"] = (
-        detector_time_data["Capacitance [pF]"] * 1e12
-    )
     fig = px.line(
-        detector_time_data,
-        x="Input Power [W]",
-        y="Signal Magnitude [s]",
-        color="Signal Type",
-    )
-    fig.add_vline(x=min_valid_current, line_color="black")
-    fig.show()
-    fig = px.line(
-        detector_snr_time_data,
-        x="Input Power [W]",
-        y="SNR",
-        color="Signal Type",
-    )
-    fig.add_vline(x=min_valid_current, line_color="black")
-    fig.show()
-
-    fig = px.scatter_3d(
         detector_data,
         x="Input Power [W]",
-        z="Signal Magnitude [A]",
-        y="Capacitance [pF]",
+        y="Signal Magnitude [e/sample]",
         color="Signal Type",
     )
+    if not np.isnan(min_valid_current_elec):
+        fig.add_hline(y=min_valid_current_elec, line_color="black")
+    fig.add_vline(x=max_optical_power, line_color="black")
+    fig.update_yaxes(range=[-6, 10])
     fig.show()
 
-    fig = px.scatter_3d(
+    fig = px.line(
         detector_snr_data,
         x="Input Power [W]",
-        z="SNR",
-        y="Capacitance [pF]",
+        y="SNR",
         color="Signal Type",
     )
     fig.show()
 
-    fig = px.scatter_3d(
-        detector_time_data,
+    fig = px.line(
+        detector_data,
         x="Input Power [W]",
-        z="Signal Magnitude [s]",
-        y="Capacitance [pF]",
+        y="Signal Magnitude [V]",
         color="Signal Type",
     )
+    if not np.isnan(c.VOLTAGE_THRESHOLD):
+        fig.add_hline(y=np.log10(c.VOLTAGE_THRESHOLD), line_color="black")
+    fig.add_vline(x=max_optical_power, line_color="black")
     fig.show()
 
-    fig = px.scatter_3d(
-        detector_snr_time_data,
-        x="Input Power [W]",
-        z="SNR",
-        y="Capacitance [pF]",
-        color="Signal Type",
-    )
-    fig.show()
+    # detector_time_data["Capacitance [pF]"] = (
+    #     detector_time_data["Capacitance [pF]"] * 1e12
+    # )
+    # fig = px.line(
+    #     detector_time_data,
+    #     x="Input Power [W]",
+    #     y="Signal Magnitude [s]",
+    #     color="Signal Type",
+    # )
+    # fig.add_hline(y=min_valid_time, line_color="black")
+    # fig.show()
+    # fig = px.line(
+    #     detector_snr_time_data,
+    #     x="Input Power [W]",
+    #     y="SNR",
+    #     color="Signal Type",
+    # )
+    # fig.show()
+
+    # fig = px.scatter_3d(
+    #     detector_data,
+    #     x="Input Power [W]",
+    #     z="Signal Magnitude [A]",
+    #     y="Capacitance [pF]",
+    #     color="Signal Type",
+    # )
+    # fig.show()
+
+    # fig = px.scatter_3d(
+    #     detector_snr_data,
+    #     x="Input Power [W]",
+    #     z="SNR",
+    #     y="Capacitance [pF]",
+    #     color="Signal Type",
+    # )
+    # fig.show()
+
+    # fig = px.scatter_3d(
+    #     detector_time_data,
+    #     x="Input Power [W]",
+    #     z="Signal Magnitude [s]",
+    #     y="Capacitance [pF]",
+    #     color="Signal Type",
+    # )
+    # fig.show()
+
+    # fig = px.scatter_3d(
+    #     detector_snr_time_data,
+    #     x="Input Power [W]",
+    #     z="SNR",
+    #     y="Capacitance [pF]",
+    #     color="Signal Type",
+    # )
+    # fig.show()
 
     # Plot SNR versus signal 2d, SNR, input power, for a particular capacitance
     # Start of input
