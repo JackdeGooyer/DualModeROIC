@@ -129,7 +129,8 @@ def amp_to_period(
         Dataframe containing output period
     """
     return copy.deepcopy(
-        (capacitor * threshold_voltage) / get_total_current(current_df)
+        (capacitor * threshold_voltage)
+        / get_total_current(current_df)  # [["Detector", "Signal_A"]] for no dark
     )
 
 
@@ -192,7 +193,7 @@ def _voltage_noise_to_jitter(
         return None
 
     out_df = noise[["Detector", "Wavelength_nm"]].copy(deep=True)
-    total_current = get_total_current(current_df)
+    total_current = get_total_current(current_df)  # [["Detector", "Signal_A"]]
     voltage_rate = total_current / capacitor
     for column in noise[noise.columns.difference(["Detector", "Wavelength_nm"])]:
         new_column = column.replace("_V_rms", "_s")
@@ -259,7 +260,7 @@ def _de_voltage_noise_to_jitter(
         return None
 
     out_df = noise[["Detector", "Wavelength_nm"]].copy(deep=True)
-    total_current = get_total_current(current_df)
+    total_current = get_total_current(current_df)  # [["Detector", "Signal_A"]]
     voltage_rate = total_current / capacitor
     for column in noise[noise.columns.difference(["Detector", "Wavelength_nm"])]:
         new_column = column.replace("_s", "_V_rms")
